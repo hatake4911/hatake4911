@@ -1,0 +1,4 @@
+streamlit==0.89.0
+PIL==9.5.0
+pandas==1.4.4
+ 
