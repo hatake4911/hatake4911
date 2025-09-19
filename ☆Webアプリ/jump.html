@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>ジャンプゲーム — スマホ対応版</title>
+<style>
+  canvas { 
+    border:1px solid black; 
+    background:lightblue; 
+    display:block; 
+    margin:auto; 
+    max-width:100%; 
+    height:auto;
+    touch-action:none; /* タップ操作で画面スクロールしない */
+  }
+  body { text-align:center; font-family:sans-serif; }
+</style>
+</head>
+<body>
+<h2>ジャンプゲーム 🎈（スマホ対応版）</h2>
+<p>青（zigzag）：接触でHP1減少</p>
+<p>オレンジ（breakable）：踏むと壊せる。壊すとスコア＋5、時間延長＋1秒、弾かれる</p>
+<p>風船（balloon）：どこから触れても倒せる。上から踏むと上に弾かれ、下から触れると下に弾かれる</p>
+<p>落とし穴：落ちると即死（プレイヤー・地面敵とも落下演出あり）</p>
+<p>スペースキー／タップでジャンプ！（空中は2段まで） Enter／タップでリスタート</p>
+
+<canvas id="game" width="400" height="300"></canvas>
+<p id="score">スコア:0 | 残り秒:100 | HP:3</p>
+<p id="status"></p>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const scoreDisplay = document.getElementById("score");
+const statusDisplay = document.getElementById("status");
+
+// プレイヤー
+let player = { x:50, y:250, vy:0, size:20, falling:false };
+let jumpStage = 0, maxJumpStage = 2;
+
+// 障害物・爆発・穴
+let obstacles = []; 
+let explosions = [];
+let holes = [];     
+
+// ゲーム状態
+let score = 0, gameOver = false;
+let spawnTimer = 0, holeTimer = 0;
+let gameTime = 6000; // 100秒
+let hp = 3, invincible = 0, flash = 0;
+
+// キー操作
+document.addEventListener("keydown", e=>{
+  if(e.code==="Space" && jumpStage<maxJumpStage && !gameOver && !player.falling){
+    jumpStage++;
+    player.vy = (jumpStage===1)? -8:-12;
+  }
+  if(e.code==="Enter" && gameOver) restart();
+});
+
+// タップ操作（スマホ対応）
+canvas.addEventListener("touchstart", e=>{
+  e.preventDefault();
+  if(!gameOver && !player.falling){
+    if(jumpStage < maxJumpStage){
+      jumpStage++;
+      player.vy = (jumpStage===1)? -8 : -12;
+    }
+  } else if(gameOver){
+    restart();
+  }
+});
+
+// 敵生成
+function spawnObstacle(){
+  const count = Math.floor(Math.random()*3)+1;
+  for(let i=0;i<count;i++){
+    const types = ["normal","zigzag","breakable","balloon"];
+    const type = types[Math.floor(Math.random()*types.length)];
+    let yPos, baseY;
+
+    if(type==="balloon"){
+      yPos = Math.floor(Math.random()*100)+50; 
+    } else if(type==="zigzag"){
+      baseY = 200 + Math.floor(Math.random()*80);
+      yPos = baseY;
+    } else {
+      yPos = (Math.random()<0.5)? 250 : Math.floor(Math.random()*100)+100;
+    }
+
+    obstacles.push({
+      x: 400 + i*30,
+      y: yPos,
+      width: 20,
+      height: 20,
+      type: type,
+      angle: 0,
+      vy: 0,
+      falling: false,
+      baseY: baseY
+    });
+  }
+}
+
+// 穴生成
+function spawnHoleIfReady(){
+  holeTimer++;
+  if(holeTimer>=120){
+    if(Math.random()<0.5) holes.push({x:400, width:40});
+    holeTimer=0;
+  }
+}
+
+// 障害物更新
+function updateObstacles(){
+  for(let ob of obstacles){
+    if(ob.falling){
+      ob.vy += 0.6;
+      ob.y += ob.vy;
+    } else {
+      ob.x -= (ob.type==="balloon")?1.5:3;
+
+      if(ob.type==="zigzag" && ob.baseY!==undefined){
+        ob.y = ob.baseY + Math.sin(ob.angle)*30;
+        ob.angle += 0.12;
+      }
+
+      if(ob.type==="balloon"){
+        ob.y += Math.sin(ob.angle)*0.5;
+        ob.x += Math.sin(ob.angle/2)*0.5;
+        ob.angle += 0.05;
+      }
+
+      // 地面敵が穴上なら落下
+      if(!ob.falling && (ob.type==="normal"||ob.type==="breakable")){
+        for(let h of holes){
+          if(ob.x+ob.width>h.x && ob.x<h.x+h.width && ob.y>=230){
+            ob.falling = true;
+            ob.vy = 2;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  obstacles = obstacles.filter(ob=>{
+    if(ob.falling && ob.y>canvas.height+50) return false;
+    if(!ob.falling && ob.x<-ob.width){ score++; return false; }
+    return true;
+  });
+
+  holes.forEach(h=>h.x -= 3);
+  holes = holes.filter(h=>h.x+h.width>0);
+}
+
+// 衝突判定
+function checkCollision(){
+  if(invincible>0 || player.falling) return;
+
+  for(let i=0;i<obstacles.length;i++){
+    let ob = obstacles[i];
+    if(ob.falling) continue;
+
+    if(ob.type==="balloon"){
+      const dx = (player.x+player.size/2)-(ob.x+ob.width/2);
+      const dy = (player.y+player.size/2)-(ob.y+ob.height/2);
+      if(Math.sqrt(dx*dx+dy*dy)<player.size/2+16){
+        explosions.push({x:ob.x+ob.width/2,y:ob.y+ob.height/2,radius:0,maxRadius:30});
+        obstacles.splice(i,1); i--; score+=5; gameTime+=60;
+        player.vy = (player.y+player.size/2<ob.y+ob.height/2)?-10:5;
+        invincible=30; flash=10;
+        continue;
+      }
+    } else {
+      if(player.x<ob.x+ob.width && player.x+player.size>ob.x &&
+         player.y<ob.y+ob.height && player.y+player.size>ob.y){
+        if(ob.type==="breakable" && player.vy>0 && player.y+player.size<=ob.y+10){
+          explosions.push({x:ob.x+ob.width/2,y:ob.y+ob.height/2,radius:0,maxRadius:30});
+          obstacles.splice(i,1); i--; score+=5; gameTime+=60; player.vy=-8; continue;
+        }
+        hp--; invincible=30; flash=10;
+        if(hp<=0) return endGame();
+      }
+    }
+  }
+
+  // 穴判定
+  const footY = player.y + player.size;
+  const footXCenter = player.x + player.size/2;
+  for(let h of holes){
+    const margin = 4; 
+    if(!player.falling && footY >= 270 &&
+       footXCenter > h.x + margin && footXCenter < h.x + h.width - margin){
+      player.falling = true;
+      player.vy = 2;
+      break;
+    }
+  }
+}
+
+// 爆発更新
+function updateExplosions(){
+  explosions.forEach(exp=>exp.radius+=2);
+  explosions = explosions.filter(exp=>exp.radius<exp.maxRadius);
+}
+
+// 描画
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle="saddlebrown"; ctx.fillRect(0,270,canvas.width,canvas.height-270);
+
+  for(let ob of obstacles){
+    if(ob.type==="balloon"){
+      ctx.beginPath();
+      ctx.arc(ob.x+ob.width/2,ob.y+ob.height/2,12,0,Math.PI*2);
+      ctx.fillStyle="pink"; ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(ob.x+ob.width/2,ob.y+ob.height/2+12);
+      ctx.lineTo(ob.x+ob.width/2,ob.y+ob.height/2+20);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle=(ob.type==="normal")?"green":(ob.type==="zigzag")?"blue":"orange";
+      ctx.globalAlpha = ob.falling?0.7:1.0;
+      ctx.fillRect(ob.x,ob.y,ob.width,ob.height);
+      ctx.globalAlpha = 1.0;
+    }
+  }
+
+  ctx.fillStyle="black"; holes.forEach(h=>ctx.fillRect(h.x,270,h.width,30));
+
+  for(let exp of explosions){
+    ctx.beginPath();
+    ctx.arc(exp.x,exp.y,exp.radius,0,Math.PI*2);
+    ctx.fillStyle="rgba(255,165,0,0.5)"; ctx.fill();
+  }
+
+  if(flash>0){
+    ctx.fillStyle="rgba(255,255,255,0.5)";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    flash--;
+  }
+
+  ctx.fillStyle="red"; ctx.fillRect(player.x,player.y,player.size,player.size);
+  ctx.fillStyle="gray"; ctx.fillRect(10,10,60,10);
+  ctx.fillStyle="lime"; ctx.fillRect(10,10,20*Math.max(0,hp),10);
+}
+
+// メインループ
+function loop(){
+  if(gameOver) return;
+
+  gameTime--;
+  if(gameTime<=0){ statusDisplay.textContent="時間切れ！ タップまたはEnterでリスタート"; return endGame(); }
+
+  if(player.falling){
+    player.vy+=0.9; player.y+=player.vy;
+    if(player.y>canvas.height+40) return endGame();
+  } else {
+    player.vy+=0.5; player.y+=player.vy;
+    if(player.y>250){ player.y=250; player.vy=0; jumpStage=0; }
+  }
+
+  spawnTimer++; if(spawnTimer>90){ spawnObstacle(); spawnTimer=0; }
+  spawnHoleIfReady();
+
+  updateObstacles();
+  if(invincible>0) invincible--;
+  if(!player.falling) checkCollision();
+  updateExplosions();
+
+  draw();
+  scoreDisplay.textContent=`スコア:${score} | 残り秒:${Math.floor(gameTime/60)} | HP:${hp}`;
+
+  requestAnimationFrame(loop);
+}
+
+function endGame(){
+  gameOver = true;
+  statusDisplay.textContent="ゲームオーバー！ タップまたはEnterでリスタート";
+}
+
+function restart(){
+  player.x = 50;
+  player.y = 250;
+  player.vy = 0;
+  player.falling = false;
+
+  jumpStage = 0;
+  obstacles = [];
+  explosions = [];
+  holes = [];
+
+  score = 0;
+  gameOver = false;
+  spawnTimer = 0;
+  holeTimer = 0;
+  gameTime = 6000;
+  hp = 3;
+  invincible = 0;
+  flash = 0;
+  statusDisplay.textContent = "";
+
+  loop();
+}
+
+// ゲーム開始
+loop();
+</script>
+</body>
+</html>
